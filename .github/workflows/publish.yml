@@ -45,6 +45,8 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   # --- CLI binaries ---
   build-cli:
@@ -58,8 +60,6 @@ jobs:
             target: linux-aarch64
           - os: macos-latest
             target: macos-arm64
-          - os: macos-13
-            target: macos-x86_64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -67,7 +67,7 @@ jobs:
 
       - name: Install dependencies (macOS)
         if: startsWith(matrix.os, 'macos')
-        run: brew install gcc@14 libomp
+        run: brew install gcc@14
 
       - name: Build LightGBM from source
         run: |
@@ -79,6 +79,19 @@ jobs:
           cmake -DBUILD_STATIC_LIB=ON -DUSE_OPENMP=ON ..
           make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
+      - name: Locate LightGBM static library
+        id: lgbm
+        run: |
+          echo "Searching for LightGBM static library..."
+          find LightGBM/build -name "*.a" | head -20
+          LGBM_LIB=$(find LightGBM/build -name "lib_lightgbm*.a" -o -name "liblightgbm*.a" | head -1)
+          if [ -z "$LGBM_LIB" ]; then
+            echo "::error::Could not find LightGBM static library"
+            exit 1
+          fi
+          echo "Found: $LGBM_LIB"
+          echo "lib=$LGBM_LIB" >> "$GITHUB_OUTPUT"
+
       - name: Generate model.h
         run: |
           xxd -i predted/model.txt > c_src/model.h
@@ -89,15 +102,19 @@ jobs:
         run: |
           if [[ "$OSTYPE" == darwin* ]]; then
             COMPILER=g++-14
+            OMP_FLAGS="-fopenmp"
+            STATIC_FLAGS=""
           else
             COMPILER=g++
+            OMP_FLAGS="-fopenmp"
+            STATIC_FLAGS="-static-libgcc -static-libstdc++"
           fi
           $COMPILER -O2 -Wall -Wno-deprecated-declarations \
             -Ic_src -ILightGBM/include \
-            -fopenmp -static-libgcc -static-libstdc++ \
+            $OMP_FLAGS $STATIC_FLAGS \
             -o predted-${{ matrix.target }} \
             c_src/predTED.c c_src/predted_features.c \
-            LightGBM/build/lib_lightgbm.a \
+            ${{ steps.lgbm.outputs.lib }} \
             -lm -lpthread
 
       - name: Verify binary
