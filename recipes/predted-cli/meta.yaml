@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/syseitz/predTED/archive/refs/tags/v{{ version }}.tar.gz
-  # sha256: UPDATE_AFTER_RELEASE
+  sha256: 1bb0492a7d8d9acd8f1b6015b36017cea5ed0ccc1a8e76a5ee7ca9f55d020e72
 
 build:
   number: 0
