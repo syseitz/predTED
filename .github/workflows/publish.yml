@@ -82,11 +82,10 @@ jobs:
       - name: Locate LightGBM static library
         id: lgbm
         run: |
-          echo "Searching for LightGBM static library..."
-          find LightGBM/build -name "*.a" | head -20
-          LGBM_LIB=$(find LightGBM/build -name "lib_lightgbm*.a" -o -name "liblightgbm*.a" | head -1)
+          LGBM_LIB=$(find LightGBM -name "lib_lightgbm.a" | head -1)
           if [ -z "$LGBM_LIB" ]; then
             echo "::error::Could not find LightGBM static library"
+            find LightGBM -name "*.a" | head -20
             exit 1
           fi
           echo "Found: $LGBM_LIB"
