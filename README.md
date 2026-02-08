@@ -14,30 +14,34 @@ Fast approximate prediction of pairwise **Tree Edit Distances (TED)** for RNA se
 
 ## Installation
 
-### Python library (recommended)
+### From PyPI (recommended)
 
 ```bash
-pip install -e .
+pip install predted
 ```
 
-This automatically compiles a C extension for fast feature computation (~28x faster than pure Python). Falls back to pure Python if compilation fails.
+This automatically compiles a C extension for ~28x faster feature computation. Falls back to pure Python if compilation fails.
 
 **Requirements:** Python >= 3.9, numpy, lightgbm
+
+### From source
+
+```bash
+git clone https://github.com/syseitz/predTED.git
+cd predTED
+pip install .
+```
 
 ### C command-line tool
 
 For high-throughput batch processing on clusters:
 
 ```bash
-# Install LightGBM (if not available via pkg-config)
-git clone --recursive https://github.com/microsoft/LightGBM.git
-cd LightGBM && mkdir build && cd build
-cmake -DBUILD_STATIC_LIB=ON .. && make -j
-cd ../..
-
-# Build the CLI binary
+# Build the CLI binary (requires LightGBM C library + OpenMP)
 make cli
 ```
+
+On macOS, the Makefile auto-detects LightGBM from the Python package and OpenMP from Homebrew (`brew install libomp`). On Linux, LightGBM must be available via `pkg-config`.
 
 ## Usage
 
@@ -147,9 +151,17 @@ Measured on 1500 RNA structures (lengths 6-102):
 
 Single-pair latency: ~0.4 ms (predted) vs ~0.7 ms (RNAdistance).
 
+## Running tests
+
+```bash
+pip install .[dev]
+make cli       # optional, for CLI tests
+make test
+```
+
 ## Licence
 
-This project is licensed under the MIT Licence. See the [LICENCE](LICENCE) file for details.
+This project is licensed under the MIT Licence. See the [LICENSE](LICENSE) file for details.
 
 ## Contact
 
