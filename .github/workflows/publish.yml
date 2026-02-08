@@ -54,34 +54,28 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x86_64
-            cc: gcc
-            omp_flag: -fopenmp
           - os: ubuntu-24.04-arm
             target: linux-aarch64
-            cc: gcc
-            omp_flag: -fopenmp
           - os: macos-latest
             target: macos-arm64
-            cc: gcc-14
-            omp_flag: -fopenmp
           - os: macos-13
             target: macos-x86_64
-            cc: gcc-14
-            omp_flag: -fopenmp
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GCC (macOS)
+      - name: Install dependencies (macOS)
         if: startsWith(matrix.os, 'macos')
-        run: brew install gcc@14
+        run: brew install gcc@14 libomp
 
       - name: Build LightGBM from source
         run: |
           git clone --depth 1 --recursive https://github.com/microsoft/LightGBM.git
-          cd LightGBM
-          mkdir build && cd build
+          cd LightGBM && mkdir build && cd build
+          if [[ "$OSTYPE" == darwin* ]]; then
+            export CC=gcc-14 CXX=g++-14
+          fi
           cmake -DBUILD_STATIC_LIB=ON -DUSE_OPENMP=ON ..
           make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
@@ -93,13 +87,18 @@ jobs:
 
       - name: Build CLI binary
         run: |
-          ${{ matrix.cc }} -O2 -Wall -Wno-deprecated-declarations \
+          if [[ "$OSTYPE" == darwin* ]]; then
+            COMPILER=g++-14
+          else
+            COMPILER=g++
+          fi
+          $COMPILER -O2 -Wall -Wno-deprecated-declarations \
             -Ic_src -ILightGBM/include \
-            ${{ matrix.omp_flag }} \
+            -fopenmp -static-libgcc -static-libstdc++ \
             -o predted-${{ matrix.target }} \
             c_src/predTED.c c_src/predted_features.c \
             LightGBM/build/lib_lightgbm.a \
-            -lm -lstdc++ -lpthread
+            -lm -lpthread
 
       - name: Verify binary
         run: ./predted-${{ matrix.target }} --version
