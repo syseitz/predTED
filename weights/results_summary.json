@@ -1,0 +1,67 @@
+{
+  "dataset": {
+    "N_total": 1500,
+    "num_pairs": 1124250
+  },
+  "split": {
+    "train_count": 719520,
+    "valid_count": 179880,
+    "test_count": 224850,
+    "train_percent": 64.0,
+    "valid_percent": 16.0,
+    "test_percent": 20.0
+  },
+  "test_metrics": {
+    "R2": 0.8709287852479106,
+    "MAE": 6.503008944201129,
+    "MAPE_percent": 9.259599580141668,
+    "pearson_r": 0.9333149013379741,
+    "pearson_r_CI95": [
+      0.9327799526949441,
+      0.9338457384819638
+    ],
+    "residual_IQR": 9.668341461374169
+  },
+  "recall_at_k": {
+    "k_values": [
+      10,
+      20,
+      50
+    ],
+    "summary": {
+      "10": {
+        "mean": 0.21786666666666668,
+        "median": 0.2,
+        "p25": 0.1,
+        "p75": 0.3
+      },
+      "20": {
+        "mean": 0.23516666666666666,
+        "median": 0.2,
+        "p25": 0.15,
+        "p75": 0.3
+      },
+      "50": {
+        "mean": 0.31982666666666665,
+        "median": 0.3,
+        "p25": 0.22,
+        "p75": 0.4
+      }
+    }
+  },
+  "pruning": {
+    "K_used": 20,
+    "total_pairs": 1124250,
+    "forwarded_pairs": 23638,
+    "pruned_percent": 97.89744273960417,
+    "candidates_per_query_median": 20
+  },
+  "timing": {
+    "predTED_predict_seconds": 0.9517738511785865,
+    "throughput_pairs_per_sec": 1181215.473200735,
+    "throughput_structures_per_sec_est": 1574.9539642676466,
+    "exact_probe_error": "Command '['RNAdistance', '-D', '-T']' returned non-zero exit status 1."
+  },
+  "tradeoff_n_estimators": [],
+  "ablation": []
+}

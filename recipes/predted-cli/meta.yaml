@@ -1,0 +1,55 @@
+{% set name = "predted-cli" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/syseitz/predTED/archive/refs/tags/v{{ version }}.tar.gz
+  # sha256: UPDATE_AFTER_RELEASE
+
+build:
+  number: 0
+  skip: true  # [win]
+  script: |
+    mkdir -p $PREFIX/bin
+    $CC $CFLAGS -O2 -Wall -I c_src \
+        $(pkg-config --cflags-only-I LightGBM) \
+        -fopenmp \
+        -o $PREFIX/bin/predted \
+        c_src/predTED.c c_src/predted_features.c \
+        $(pkg-config --libs LightGBM) \
+        -lm $LDFLAGS
+
+requirements:
+  build:
+    - {{ compiler('c') }}
+    - make
+    - pkg-config
+  host:
+    - lightgbm
+  run:
+    - lightgbm
+    - libgomp  # [linux]
+
+test:
+  commands:
+    - predted --version
+
+about:
+  home: https://github.com/syseitz/predTED
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: CLI tool for fast approximate Tree Edit Distance prediction for RNA structures
+  description: |
+    Standalone C binary for predicting pairwise Tree Edit Distances between
+    RNA secondary structures. Reads dot-bracket structures from stdin and
+    computes an all-vs-all distance matrix using a LightGBM model with
+    OpenMP parallelisation. Supports text and binary output formats.
+  dev_url: https://github.com/syseitz/predTED
+
+extra:
+  recipe-maintainers:
+    - syseitz

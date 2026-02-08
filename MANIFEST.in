@@ -1,0 +1,4 @@
+include LICENSE
+include README.md
+recursive-include c_src *.c *.h
+recursive-include predted *.txt

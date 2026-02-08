@@ -1,0 +1,52 @@
+{% set name = "predted" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.org/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  # sha256: UPDATE_AFTER_PYPI_UPLOAD
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  skip: true  # [py<39]
+
+requirements:
+  build:
+    - {{ compiler('c') }}
+  host:
+    - python
+    - pip
+    - setuptools >=64
+    - numpy
+  run:
+    - python >=3.9
+    - numpy
+    - lightgbm
+
+test:
+  imports:
+    - predted
+    - predted.features
+  commands:
+    - python -c "import predted; print(predted.predict('((..))', '(())..'))"
+
+about:
+  home: https://github.com/syseitz/predTED
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: Fast approximate Tree Edit Distance prediction for RNA secondary structures
+  description: |
+    predTED uses structural features and a LightGBM model to approximate
+    pairwise Tree Edit Distances between RNA secondary structures without
+    running the expensive exact algorithm. Includes an optional C extension
+    for ~30x faster feature computation.
+  dev_url: https://github.com/syseitz/predTED
+
+extra:
+  recipe-maintainers:
+    - syseitz

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predted"
+version = "0.1.0"
+description = "Fast approximate Tree Edit Distance prediction for RNA secondary structures"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Yannick Seitz"},
+]
+keywords = [
+    "rna",
+    "rna-structure",
+    "tree-edit-distance",
+    "bioinformatics",
+    "lightgbm",
+    "machine-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy",
+    "lightgbm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/syseitz/predTED"
+Repository = "https://github.com/syseitz/predTED"
+Issues = "https://github.com/syseitz/predTED/issues"
+
+[tool.setuptools.packages.find]
+include = ["predted*"]
+
+[tool.setuptools.package-data]
+predted = ["model.txt"]

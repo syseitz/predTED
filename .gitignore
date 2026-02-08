@@ -1,0 +1,26 @@
+# Build & Cache
+build/
+dist/
+__pycache__/
+*.egg-info/
+*.pyc
+*.so
+.DS_Store
+
+# Large dependencies (not tracked)
+LightGBM/
+
+# Compiled binaries
+bin/
+
+# Auto-generated C headers
+c_src/model.h
+c_src/best_model.h
+c_src/_predTED*.so
+c_src/predTED_wrap.c
+
+# Root model.txt (redundant copy — the package uses predted/model.txt)
+/model.txt
+
+# Old files
+meta.yaml.old
