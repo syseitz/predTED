@@ -21,7 +21,7 @@ import numpy as np
 
 from .features import NUM_FEATURES, compute_features
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["predict", "predict_float", "predict_matrix", "compute_features"]
 
 _MODEL_PATH = Path(__file__).resolve().parent / "model.txt"
