@@ -2,7 +2,7 @@
 
 Fast approximate prediction of pairwise **Tree Edit Distances (TED)** for RNA secondary structures in dot-bracket notation. Uses 144 structural features with a LightGBM regression model to avoid the expensive exact O(n^4) computation.
 
-**Up to 100x faster** than `RNAdistance` for pairwise distance matrices, making it practical as a prefilter for large-scale RNA structure comparisons.
+**Up to 100x faster** than `RNAdistance` for pairwise distance matrices, with multi-threaded computation and SIMD acceleration. Designed for large-scale RNA structure comparisons with 100K+ structures.
 
 | Metric | Value |
 |--------|-------|
@@ -34,7 +34,7 @@ pip install .
 
 ### C command-line tool
 
-For high-throughput batch processing on clusters:
+For high-throughput batch processing on clusters (multi-threaded, SIMD-accelerated):
 
 ```bash
 # Build the CLI binary (requires LightGBM C library + OpenMP)
@@ -88,6 +88,8 @@ Options:
 --topk K, -k K         KNN mode: keep only K closest neighbours per row
 --tau T, -T T          Distance threshold for KNN (default: 300)
 --knn-prefix P, -K P   File prefix for KNN output (.idx + .dst memmaps)
+--max-len-diff L, -L L Skip pairs differing by >L in length (prefilter)
+--subsample S, -s S    Predict only ~1/S pairs (deterministic subsampling)
 ```
 
 ## How it works
@@ -113,17 +115,17 @@ predted/              Python package
   __init__.py           API: predict(), predict_float(), predict_matrix()
   features.py           Feature computation (C extension with Python fallback)
 c_src/                C source code
-  predted_features.c    Shared feature computation (single source of truth)
-  predted_features.h    Header
+  predted_features.c    Feature computation (single source of truth, StructureContext)
+  predted_features.h    Header (StructureContext typedef, feature functions)
   _features_module.c    Python C extension wrapper
-  predTED.c             CLI binary (batch matrix computation)
+  predTED.c             CLI binary (multi-threaded, SIMD, chunk-based parallelism)
   model.h               Embedded model for CLI (generated from model.txt)
 model.txt             LightGBM model file
 data/                 Training data
   structures.txt        1500 RNA structures
   ted_matrix.txt        Ground truth TED matrix
 weights/              Training scripts and evaluation results
-benchmarks/           Speed benchmarks vs RNAdistance
+benchmarks/           Speed benchmarks and batch-size tuning
 ```
 
 ## Training your own model
@@ -139,17 +141,40 @@ python train_rich_model.py
 xxd -i model.txt c_src/model.h
 ```
 
-## Benchmarks
+## Performance
 
-Measured on 1500 RNA structures (lengths 6-102):
+### Multi-threading (CLI)
 
-| N | Pairs | predted | RNAdistance | Speedup |
-|---|-------|---------|-------------|---------|
+The CLI uses OpenMP for chunk-based parallel computation. Each thread gets its own LightGBM booster instance for lock-free prediction. Measured on 1500 structures (M4 Mac, 1.1M pairs):
+
+| Threads | Time | Speedup |
+|---------|------|---------|
+| 1 | 11.8s | 1.0x |
+| 2 | 6.2s | 1.9x |
+| 4 | 3.4s | 3.5x |
+| 8 | 2.2s | 5.4x |
+
+On SLURM clusters with 32+ cores, expect near-linear scaling.
+
+### vs RNAdistance
+
+| N | Pairs | predted (1 thread) | RNAdistance | Speedup |
+|---|-------|--------------------|-------------|---------|
 | 50 | 1,225 | 0.01s | 0.6s | 60x |
 | 100 | 4,950 | 0.03s | 2.4s | 80x |
 | 500 | 124,750 | 0.43s | 44.1s | 100x |
 
-Single-pair latency: ~0.4 ms (predted) vs ~0.7 ms (RNAdistance).
+### Memory usage
+
+The CLI streams results in chunks (`ROW_CHUNK`, default 256 rows), keeping RAM bounded:
+
+| N structures | Feature array | Chunk buffer | Total |
+|-------------|---------------|--------------|-------|
+| 10,000 | 2.7 MB | 5 MB | ~10 MB |
+| 100,000 | 27 MB | 49 MB | ~80 MB |
+| 500,000 | 137 MB | 244 MB | ~400 MB |
+
+The Python API uses row-by-row streaming with NumPy vectorisation (O(N) memory per row).
 
 ## Running tests
 
@@ -158,6 +183,16 @@ pip install .[dev]
 make cli       # optional, for CLI tests
 make test
 ```
+
+## Batch-size tuning
+
+The CLI processes LightGBM predictions in batches (default 8192). To find the optimal batch size for your system:
+
+```bash
+make bench-batch
+```
+
+Override at compile time: `make cli CFLAGS="-O2 -march=native -DBATCH_SIZE=16384"`
 
 ## Licence
 
