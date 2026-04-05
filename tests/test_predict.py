@@ -112,3 +112,43 @@ class TestPredictMatrix:
                     f"Mismatch at [{i},{j}]: matrix={matrix[i,j]}, "
                     f"single={single}"
                 )
+
+
+class TestPredictMatrixStreaming:
+    """Verify the streaming implementation matches pair-by-pair computation."""
+
+    def test_medium_matrix_consistent(self):
+        """20 structures: matrix entries must match individual predict() calls."""
+        structs = [
+            "((..))", "(())..", "...((..))...", "((((...))))",
+            "(((..(((....)))..((....))..)))",
+            "((((((((((...((.(((...)).))).)))))))))",
+            "................",
+            "((((....))))", ".((..((.....))..)).",
+            "(((....)))(((....)))",
+            "..((..))..", "(((..((..))..)))",
+            "((((((......)))))).........",
+            "......(((((((.......)))))))",
+            "((..((..((.....))..))..)).",
+            "(((...)))(((...)))(((...)))",
+            "..(((....)))...(((....))).",
+            "((((....((((....))))...))))",
+            "((....))((....))((....))",
+            "((((((((....)))))))).",
+        ]
+        matrix = predted.predict_matrix(structs, dtype=int)
+        for i in range(len(structs)):
+            for j in range(i + 1, len(structs)):
+                single = predted.predict(structs[i], structs[j])
+                assert matrix[i, j] == single, (
+                    f"Mismatch at [{i},{j}]: matrix={matrix[i,j]}, single={single}"
+                )
+
+    def test_dtype_float_streaming(self):
+        structs = ["((..))", "(())..", "...((..))...", "((((...))))"]
+        mat_f = predted.predict_matrix(structs, dtype=float)
+        mat_i = predted.predict_matrix(structs, dtype=int)
+        np.testing.assert_array_equal(
+            np.round(mat_f).astype(int),
+            mat_i,
+        )

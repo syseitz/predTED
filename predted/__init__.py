@@ -100,35 +100,36 @@ def predict_matrix(
     if n == 0:
         return np.zeros((0, 0), dtype=dtype)
 
-    # Pre-compute per-structure features
+    # Pre-compute per-structure features — O(N * 36)
     all_features = np.array([compute_features(s) for s in structures])
 
-    # Build rich pairwise features for upper triangle
-    pairs: List[np.ndarray] = []
-    indices: List[tuple] = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            pairs.append(_build_rich_features(all_features[i], all_features[j]))
-            indices.append((i, j))
-
-    if not pairs:
-        return np.zeros((n, n), dtype=dtype)
-
-    pair_array = np.array(pairs, dtype=np.float32)
-    booster = _get_booster()
-    predictions = booster.predict(pair_array)
-    predictions = np.clip(predictions, 0, None)
-
     use_float = (dtype is float or dtype is np.float64 or dtype is np.float32)
+    matrix = np.zeros((n, n), dtype=np.float64 if use_float else int)
 
-    if use_float:
-        matrix = np.zeros((n, n), dtype=np.float64)
-    else:
-        predictions = np.round(predictions).astype(int)
-        matrix = np.zeros((n, n), dtype=int)
+    if n < 2:
+        return matrix
 
-    for k, (i, j) in enumerate(indices):
-        matrix[i, j] = predictions[k]
-        matrix[j, i] = predictions[k]
+    booster = _get_booster()
+
+    # Row-by-row streaming: O(N) memory per iteration instead of O(N^2) total
+    for i in range(n - 1):
+        fi = all_features[i]             # (36,)
+        fj = all_features[i + 1:]       # (N-i-1, 36)
+
+        # Vectorised pairwise feature building (NumPy broadcasts fi over rows of fj)
+        diff = np.abs(fi - fj)
+        sums = fi + fj
+        mins = np.minimum(fi, fj)
+        maxs = np.maximum(fi, fj)
+        row_features = np.concatenate([diff, sums, mins, maxs], axis=1).astype(np.float32)
+
+        preds = booster.predict(row_features)
+        preds = np.clip(preds, 0, None)
+
+        if not use_float:
+            preds = np.round(preds).astype(int)
+
+        matrix[i, i + 1:] = preds
+        matrix[i + 1:, i] = preds
 
     return matrix
