@@ -80,7 +80,9 @@ static inline void build_rich_features_simd(
 #define NUM_FEATURES_RICH (NUM_FEATURES_BASE * 4)  /* diff + sum + min + max */
 #define VERSION "0.1.0"
 #define INITIAL_CAPACITY 100
-#define BATCH_SIZE 8192  // Define batch size for predictions
+#ifndef BATCH_SIZE
+#define BATCH_SIZE 8192  /* overridable via -DBATCH_SIZE=N at compile time */
+#endif
 
 int predict_TED(const char* struct1, const char* struct2, BoosterHandle booster) {
     double features1[NUM_FEATURES_BASE];

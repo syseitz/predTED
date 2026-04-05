@@ -53,6 +53,9 @@ $(CLI_BIN): $(CLI_SRC) c_src/predted_features.h c_src/model.h
 test:
 	python -m pytest tests/ -v
 
+bench-batch:
+	bash benchmarks/bench_batch_size.sh data/structures.txt
+
 clean:
 	rm -rf build/ dist/ *.egg-info predted/*.so predted/__pycache__
 	rm -f $(CLI_BIN)
