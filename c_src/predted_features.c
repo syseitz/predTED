@@ -199,51 +199,35 @@ void get_loop_features(const char* structure, double* mean_loop, double* var_loo
     free(loop_sizes);
 }
 
+static inline int char_idx(char c) {
+    /* '(' -> 0, ')' -> 1, '.' -> 2 */
+    return c == '(' ? 0 : (c == ')' ? 1 : 2);
+}
+
 double* get_ngram_features(const char* structure, int n) {
-    int len = strlen(structure);
+    int len = (int)strlen(structure);
     int num_ngrams = n == 2 ? 9 : 27;
     double* frequencies = (double*)calloc(num_ngrams, sizeof(double));
-    if (len < n) return frequencies;
-    char* ngram = (char*)malloc((n + 1) * sizeof(char));
     int total = len - n + 1;
-    char symbols[] = "().";
-    char** possible_ngrams = (char**)malloc(num_ngrams * sizeof(char*));
-    int idx = 0;
+    if (total <= 0) return frequencies;
+
     if (n == 2) {
-        for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < 3; j++) {
-                possible_ngrams[idx] = (char*)malloc(3 * sizeof(char));
-                sprintf(possible_ngrams[idx], "%c%c", symbols[i], symbols[j]);
-                idx++;
-            }
+        for (int i = 0; i < total; i++) {
+            int idx = char_idx(structure[i]) * 3 + char_idx(structure[i + 1]);
+            frequencies[idx]++;
         }
     } else {
-        for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < 3; j++) {
-                for (int k = 0; k < 3; k++) {
-                    possible_ngrams[idx] = (char*)malloc(4 * sizeof(char));
-                    sprintf(possible_ngrams[idx], "%c%c%c", symbols[i], symbols[j], symbols[k]);
-                    idx++;
-                }
-            }
+        for (int i = 0; i < total; i++) {
+            int idx = char_idx(structure[i]) * 9
+                    + char_idx(structure[i + 1]) * 3
+                    + char_idx(structure[i + 2]);
+            frequencies[idx]++;
         }
     }
-    for (int i = 0; i <= len - n; i++) {
-        strncpy(ngram, structure + i, n);
-        ngram[n] = '\0';
-        for (int j = 0; j < num_ngrams; j++) {
-            if (strcmp(ngram, possible_ngrams[j]) == 0) {
-                frequencies[j]++;
-                break;
-            }
-        }
-    }
+
     for (int j = 0; j < num_ngrams; j++) {
         frequencies[j] /= total;
-        free(possible_ngrams[j]);
     }
-    free(possible_ngrams);
-    free(ngram);
     return frequencies;
 }
 
