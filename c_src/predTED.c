@@ -320,25 +320,38 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "[predTED] loaded %d booster instances\n", num_threads);
 
 
-    // Thread-local buffer allocation
+    // Chunk buffer: ROW_CHUNK rows computed in parallel, then flushed sequentially.
+    // This avoids omp-ordered (which serialises the loop) while keeping RAM bounded.
+    #ifndef ROW_CHUNK
+    #define ROW_CHUNK 256
+    #endif
+    const int chunk_size = (ROW_CHUNK < num_structures) ? ROW_CHUNK : num_structures;
+
+    uint16_t *chunk_int = NULL;
+    double   *chunk_flt = NULL;
+    float    *out_f32   = NULL;
+
+    if (float_output) {
+        chunk_flt = (double*)calloc((size_t)chunk_size * num_structures, sizeof(double));
+        if (!chunk_flt) { fprintf(stderr, "Out of memory allocating chunk buffer\n"); return 1; }
+    } else {
+        chunk_int = (uint16_t*)malloc((size_t)chunk_size * num_structures * sizeof(uint16_t));
+        if (!chunk_int) { fprintf(stderr, "Out of memory allocating chunk buffer\n"); return 1; }
+    }
+    if (binary_output && float_output) {
+        out_f32 = (float*)malloc((size_t)num_structures * sizeof(float));
+        if (!out_f32) { fprintf(stderr, "Out of memory allocating float32 buffer\n"); return 1; }
+    }
+
+    fprintf(stderr, "[predTED] chunk_size=%d (%.1f MB row buffer)\n", chunk_size,
+            (double)chunk_size * num_structures * (float_output ? 8 : 2) / (1024.0 * 1024.0));
+
+    // Thread-local batch buffers (for LightGBM prediction only)
     float  *all_batch = (float*)malloc((size_t)num_threads * BATCH_SIZE * num_feat * sizeof(float));
     double *all_out   = (double*)malloc((size_t)num_threads * BATCH_SIZE * sizeof(double));
     int    *all_pairs = (int*)malloc((size_t)num_threads * BATCH_SIZE * sizeof(int));
-
-    uint16_t *all_row_int = NULL;
-    double   *all_row_flt = NULL;
-    float    *all_row_f32 = NULL;
-    if (float_output)
-        all_row_flt = (double*)calloc((size_t)num_threads * num_structures, sizeof(double));
-    else
-        all_row_int = (uint16_t*)malloc((size_t)num_threads * num_structures * sizeof(uint16_t));
-    if (binary_output && float_output)
-        all_row_f32 = (float*)malloc((size_t)num_threads * num_structures * sizeof(float));
-
-    if (!all_batch || !all_out || !all_pairs ||
-        (float_output && !all_row_flt) || (!float_output && !all_row_int)) {
-        fprintf(stderr, "Out of memory allocating thread-local buffers\n");
-        return 1;
+    if (!all_batch || !all_out || !all_pairs) {
+        fprintf(stderr, "Out of memory allocating batch buffers\n"); return 1;
     }
 
     // KNN mode: open output files
@@ -369,17 +382,29 @@ int main(int argc, char* argv[]) {
     int completed_rows = 0;
     int last_percentage = -1;
 
-    // KNN thread buffers (if needed)
-    int32_t  *all_knn_idx = NULL;
-    uint16_t *all_knn_dst = NULL;
+    // KNN buffers (single set — used only in sequential output phase)
+    int32_t  *knn_idx_buf = NULL;
+    uint16_t *knn_dst_buf = NULL;
     if (topk > 0) {
-        all_knn_idx = (int32_t*)malloc((size_t)num_threads * topk * sizeof(int32_t));
-        all_knn_dst = (uint16_t*)malloc((size_t)num_threads * topk * sizeof(uint16_t));
-        if (!all_knn_idx || !all_knn_dst) {
+        knn_idx_buf = (int32_t*)malloc((size_t)topk * sizeof(int32_t));
+        knn_dst_buf = (uint16_t*)malloc((size_t)topk * sizeof(uint16_t));
+        if (!knn_idx_buf || !knn_dst_buf) {
             fprintf(stderr, "Out of memory allocating KNN buffers\n");
             return 1;
         }
     }
+
+    /* ================================================================
+     * Chunk-based parallel pairwise computation.
+     *
+     * Instead of omp-ordered (which serialises the entire loop),
+     * we process ROW_CHUNK rows at a time:
+     *   Phase 1 — all threads compute chunk rows in parallel (no ordering)
+     *   Phase 2 — one thread writes output sequentially (microseconds)
+     *
+     * The implicit barrier between phases ensures correctness.
+     * RAM: chunk_size × N × element_size  (e.g. 256 × 500K × 2 = 256 MB)
+     * ================================================================ */
 
     #pragma omp parallel
     {
@@ -388,223 +413,212 @@ int main(int argc, char* argv[]) {
         float  *my_batch = &all_batch[(size_t)tid * BATCH_SIZE * num_feat];
         double *my_out   = &all_out[(size_t)tid * BATCH_SIZE];
         int    *my_pairs = &all_pairs[(size_t)tid * BATCH_SIZE];
-        uint16_t *my_row_int = all_row_int ? &all_row_int[(size_t)tid * num_structures] : NULL;
-        double   *my_row_flt = all_row_flt ? &all_row_flt[(size_t)tid * num_structures] : NULL;
-        float    *my_row_f32 = all_row_f32 ? &all_row_f32[(size_t)tid * num_structures] : NULL;
-        int32_t  *my_knn_idx = all_knn_idx ? &all_knn_idx[(size_t)tid * topk] : NULL;
-        uint16_t *my_knn_dst = all_knn_dst ? &all_knn_dst[(size_t)tid * topk] : NULL;
 
-        #pragma omp for schedule(dynamic, 1) ordered
-        for (int i = 0; i < num_structures; ++i) {
-            // initialize row with zeros (including diagonal)
-            if (float_output)
-                memset(my_row_flt, 0, (size_t)num_structures * sizeof(double));
-            else
-                memset(my_row_int, 0, (size_t)num_structures * sizeof(uint16_t));
+        for (int chunk_start = 0; chunk_start < num_structures; chunk_start += chunk_size) {
+            const int chunk_end = (chunk_start + chunk_size < num_structures)
+                                ? chunk_start + chunk_size : num_structures;
+            const int chunk_len = chunk_end - chunk_start;
 
-            int batch_count = 0;
-            const int len_i = lengths[i];
+            /* --- Phase 1: compute all rows in this chunk (fully parallel) --- */
+            #pragma omp for schedule(dynamic, 1)
+            for (int ci = 0; ci < chunk_len; ++ci) {
+                const int i = chunk_start + ci;
+                uint16_t *row_int = chunk_int ? &chunk_int[(size_t)ci * num_structures] : NULL;
+                double   *row_flt = chunk_flt ? &chunk_flt[(size_t)ci * num_structures] : NULL;
 
-            for (int j = i + 1; j < num_structures; ++j) {
-                const int len_j = lengths[j];
+                if (float_output)
+                    memset(row_flt, 0, (size_t)num_structures * sizeof(double));
+                else
+                    memset(row_int, 0, (size_t)num_structures * sizeof(uint16_t));
 
-                // Cheap prefilter by length difference (skip LightGBM call)
-                if (max_len_diff >= 0 && abs(len_i - len_j) > max_len_diff) {
-                    if (float_output) my_row_flt[j] = 301.0;
-                    else              my_row_int[j] = 301;
-                    continue;
-                }
+                int batch_count = 0;
+                const int len_i = lengths[i];
 
-                // Subsampling: only predict ~1/subsample pairs deterministically
-                if (subsample > 1) {
-                    if (((i + j) % subsample) != 0) {
-                        if (float_output) my_row_flt[j] = -1.0;
-                        else              my_row_int[j] = (uint16_t)MISS_UINT16;
+                for (int j = i + 1; j < num_structures; ++j) {
+                    const int len_j = lengths[j];
+
+                    if (max_len_diff >= 0 && abs(len_i - len_j) > max_len_diff) {
+                        if (float_output) row_flt[j] = 301.0;
+                        else              row_int[j] = 301;
                         continue;
                     }
-                }
 
-                // Fill pairwise features for pair (i, j)
-                const int offset = batch_count * num_feat;
-                const double *fi = &features[i * NUM_FEATURES_BASE];
-                const double *fj = &features[j * NUM_FEATURES_BASE];
-
-                build_rich_features_simd(fi, fj, &my_batch[offset], rich_features);
-                my_pairs[batch_count] = j;
-                batch_count++;
-
-                // Flush batch if full or at the end of the row
-                if (batch_count == BATCH_SIZE || j == num_structures - 1) {
-                    if (batch_count > 0) {
-                        int64_t out_len = 0;
-
-                        if (LGBM_BoosterPredictForMat(
-                                my_booster,
-                                (const void*)my_batch,
-                                C_API_DTYPE_FLOAT32,
-                                batch_count,
-                                num_feat,
-                                1,
-                                C_API_PREDICT_NORMAL,
-                                -1,
-                                0,
-                                lgbm_params_single,
-                                &out_len,
-                                my_out) != 0) {
-                            fprintf(stderr, "LightGBM prediction failed (thread %d)\n", tid);
+                    if (subsample > 1) {
+                        if (((i + j) % subsample) != 0) {
+                            if (float_output) row_flt[j] = -1.0;
+                            else              row_int[j] = (uint16_t)MISS_UINT16;
+                            continue;
                         }
+                    }
 
-                        for (int b = 0; b < batch_count; ++b) {
-                            int col = my_pairs[b];
-                            double val = my_out[b];
-                            if (val < 0) val = 0;
-                            if (float_output) {
-                                my_row_flt[col] = val;
-                            } else {
-                                int pred_ted = (int)llround(val);
-                                if (pred_ted > 65535) pred_ted = 65535;
-                                my_row_int[col] = (uint16_t)pred_ted;
+                    const int offset = batch_count * num_feat;
+                    const double *fi = &features[i * NUM_FEATURES_BASE];
+                    const double *fj = &features[j * NUM_FEATURES_BASE];
+
+                    build_rich_features_simd(fi, fj, &my_batch[offset], rich_features);
+                    my_pairs[batch_count] = j;
+                    batch_count++;
+
+                    if (batch_count == BATCH_SIZE || j == num_structures - 1) {
+                        if (batch_count > 0) {
+                            int64_t out_len = 0;
+                            if (LGBM_BoosterPredictForMat(
+                                    my_booster,
+                                    (const void*)my_batch,
+                                    C_API_DTYPE_FLOAT32,
+                                    batch_count, num_feat, 1,
+                                    C_API_PREDICT_NORMAL, -1, 0,
+                                    lgbm_params_single,
+                                    &out_len, my_out) != 0) {
+                                fprintf(stderr, "LightGBM prediction failed (thread %d)\n", tid);
                             }
+                            for (int b = 0; b < batch_count; ++b) {
+                                int col = my_pairs[b];
+                                double val = my_out[b];
+                                if (val < 0) val = 0;
+                                if (float_output) {
+                                    row_flt[col] = val;
+                                } else {
+                                    int pred_ted = (int)llround(val);
+                                    if (pred_ted > 65535) pred_ted = 65535;
+                                    row_int[col] = (uint16_t)pred_ted;
+                                }
+                            }
+                            batch_count = 0;
                         }
-                        batch_count = 0;
                     }
                 }
             }
+            /* implicit barrier — all chunk rows computed */
 
-            #pragma omp ordered
+            /* --- Phase 2: output chunk rows sequentially (single thread) --- */
+            #pragma omp single
             {
-                // Output this row
-                if (topk > 0) {
-                    // --- KNN mode: extract top-K from row, write to files ---
-                    for (int k = 0; k < topk; k++) {
-                        my_knn_idx[k] = -1;
-                        my_knn_dst[k] = UINT16_MAX;
-                    }
-                    int knn_count = 0;
-                    uint16_t knn_worst = 0;
-                    int knn_worst_pos = 0;
+                for (int ci = 0; ci < chunk_len; ++ci) {
+                    const int i = chunk_start + ci;
+                    uint16_t *row_int = chunk_int ? &chunk_int[(size_t)ci * num_structures] : NULL;
+                    double   *row_flt = chunk_flt ? &chunk_flt[(size_t)ci * num_structures] : NULL;
 
-                    for (int j = i + 1; j < num_structures; ++j) {
-                        uint16_t d = my_row_int[j];
-                        if (d == 0 || d == MISS_UINT16 || d > (uint16_t)tau) continue;
+                    if (topk > 0) {
+                        for (int k = 0; k < topk; k++) {
+                            knn_idx_buf[k] = -1;
+                            knn_dst_buf[k] = UINT16_MAX;
+                        }
+                        int knn_count = 0;
+                        uint16_t knn_worst = 0;
+                        int knn_worst_pos = 0;
 
-                        if (knn_count < topk) {
-                            my_knn_idx[knn_count] = (int32_t)j;
-                            my_knn_dst[knn_count] = d;
-                            if (d > knn_worst) { knn_worst = d; knn_worst_pos = knn_count; }
-                            knn_count++;
-                        } else if (d < knn_worst) {
-                            my_knn_idx[knn_worst_pos] = (int32_t)j;
-                            my_knn_dst[knn_worst_pos] = d;
-                            knn_worst = 0;
-                            for (int k = 0; k < topk; k++) {
-                                if (my_knn_dst[k] > knn_worst && my_knn_idx[k] >= 0) {
-                                    knn_worst = my_knn_dst[k];
-                                    knn_worst_pos = k;
+                        for (int j = i + 1; j < num_structures; ++j) {
+                            uint16_t d = row_int[j];
+                            if (d == 0 || d == MISS_UINT16 || d > (uint16_t)tau) continue;
+                            if (knn_count < topk) {
+                                knn_idx_buf[knn_count] = (int32_t)j;
+                                knn_dst_buf[knn_count] = d;
+                                if (d > knn_worst) { knn_worst = d; knn_worst_pos = knn_count; }
+                                knn_count++;
+                            } else if (d < knn_worst) {
+                                knn_idx_buf[knn_worst_pos] = (int32_t)j;
+                                knn_dst_buf[knn_worst_pos] = d;
+                                knn_worst = 0;
+                                for (int k = 0; k < topk; k++) {
+                                    if (knn_dst_buf[k] > knn_worst && knn_idx_buf[k] >= 0) {
+                                        knn_worst = knn_dst_buf[k];
+                                        knn_worst_pos = k;
+                                    }
                                 }
                             }
                         }
-                    }
+                        fwrite(knn_idx_buf, sizeof(int32_t),  (size_t)topk, knn_idx_fp);
+                        fwrite(knn_dst_buf, sizeof(uint16_t), (size_t)topk, knn_dst_fp);
 
-                    fwrite(my_knn_idx, sizeof(int32_t),  (size_t)topk, knn_idx_fp);
-                    fwrite(my_knn_dst, sizeof(uint16_t), (size_t)topk, knn_dst_fp);
-
-                } else if (binary_output) {
-                    // --- Binary condensed output ---
-                    if (upper_only) {
-                        int count = num_structures - i - 1;
-                        if (count > 0) {
+                    } else if (binary_output) {
+                        if (upper_only) {
+                            int count = num_structures - i - 1;
+                            if (count > 0) {
+                                if (float_output) {
+                                    for (int j = 0; j < count; j++)
+                                        out_f32[j] = (float)row_flt[i + 1 + j];
+                                    fwrite(out_f32, sizeof(float), (size_t)count, stdout);
+                                } else {
+                                    fwrite(&row_int[i + 1], sizeof(uint16_t), (size_t)count, stdout);
+                                }
+                            }
+                        } else {
                             if (float_output) {
-                                for (int j = 0; j < count; j++)
-                                    my_row_f32[j] = (float)my_row_flt[i + 1 + j];
-                                fwrite(my_row_f32, sizeof(float), (size_t)count, stdout);
+                                for (int j = 0; j < num_structures; j++)
+                                    out_f32[j] = (float)row_flt[j];
+                                fwrite(out_f32, sizeof(float), (size_t)num_structures, stdout);
                             } else {
-                                fwrite(&my_row_int[i + 1], sizeof(uint16_t), (size_t)count, stdout);
+                                fwrite(row_int, sizeof(uint16_t), (size_t)num_structures, stdout);
                             }
                         }
+
                     } else {
                         if (float_output) {
-                            for (int j = 0; j < num_structures; j++)
-                                my_row_f32[j] = (float)my_row_flt[j];
-                            fwrite(my_row_f32, sizeof(float), (size_t)num_structures, stdout);
+                            if (upper_only) {
+                                if (i + 1 < num_structures) {
+                                    for (int j = i + 1; j < num_structures; ++j) {
+                                        if (j + 1 < num_structures) printf("%.4f ", row_flt[j]);
+                                        else                        printf("%.4f", row_flt[j]);
+                                    }
+                                }
+                                printf("\n");
+                            } else {
+                                for (int j = 0; j < num_structures; ++j)
+                                    printf("%.4f ", row_flt[j]);
+                                printf("\n");
+                            }
                         } else {
-                            fwrite(my_row_int, sizeof(uint16_t), (size_t)num_structures, stdout);
+                            if (upper_only) {
+                                if (i + 1 < num_structures) {
+                                    for (int j = i + 1; j < num_structures; ++j) {
+                                        if (j + 1 < num_structures) printf("%" PRIu16 " ", row_int[j]);
+                                        else                        printf("%" PRIu16, row_int[j]);
+                                    }
+                                }
+                                printf("\n");
+                            } else {
+                                for (int j = 0; j < num_structures; ++j)
+                                    printf("%" PRIu16 " ", row_int[j]);
+                                printf("\n");
+                            }
                         }
                     }
 
-                } else {
-                    // --- Text output (original behaviour) ---
-                    if (float_output) {
-                        if (upper_only) {
-                            if (i + 1 < num_structures) {
-                                for (int j = i + 1; j < num_structures; ++j) {
-                                    if (j + 1 < num_structures)
-                                        printf("%.4f ", my_row_flt[j]);
-                                    else
-                                        printf("%.4f", my_row_flt[j]);
-                                }
-                            }
-                            printf("\n");
+                    completed_rows++;
+                    int percentage = (completed_rows * 100) / (num_structures > 0 ? num_structures : 1);
+                    if (percentage != last_percentage) {
+                        time_t now = time(NULL);
+                        double elapsed = difftime(now, start_time);
+                        double est_total = percentage ? elapsed / (percentage / 100.0) : 0.0;
+                        double remaining = est_total - elapsed;
+                        if (is_tty) {
+                            fprintf(stderr, "\rProgress: %d%%, Elapsed: %.0f s, Remaining: %.0f s",
+                                    percentage, elapsed, remaining);
+                            fflush(stderr);
                         } else {
-                            for (int j = 0; j < num_structures; ++j) {
-                                printf("%.4f ", my_row_flt[j]);
-                            }
-                            printf("\n");
+                            fprintf(stderr, "Progress: %d%%, Elapsed: %.0f s, Remaining: %.0f s\n",
+                                    percentage, elapsed, remaining);
                         }
-                    } else {
-                        if (upper_only) {
-                            if (i + 1 < num_structures) {
-                                for (int j = i + 1; j < num_structures; ++j) {
-                                    if (j + 1 < num_structures)
-                                        printf("%" PRIu16 " ", my_row_int[j]);
-                                    else
-                                        printf("%" PRIu16, my_row_int[j]);
-                                }
-                            }
-                            printf("\n");
-                        } else {
-                            for (int j = 0; j < num_structures; ++j) {
-                                printf("%" PRIu16 " ", my_row_int[j]);
-                            }
-                            printf("\n");
-                        }
+                        last_percentage = percentage;
                     }
-                }
-
-                // Progress
-                completed_rows++;
-                int percentage = (completed_rows * 100) / (num_structures > 0 ? num_structures : 1);
-                if (percentage != last_percentage) {
-                    time_t now = time(NULL);
-                    double elapsed = difftime(now, start_time);
-                    double est_total = percentage ? elapsed / (percentage / 100.0) : 0.0;
-                    double remaining = est_total - elapsed;
-                    if (is_tty) {
-                        fprintf(stderr, "\rProgress: %d%%, Elapsed: %.0f s, Remaining: %.0f s",
-                                percentage, elapsed, remaining);
-                        fflush(stderr);
-                    } else {
-                        fprintf(stderr, "Progress: %d%%, Elapsed: %.0f s, Remaining: %.0f s\n",
-                                percentage, elapsed, remaining);
-                    }
-                    last_percentage = percentage;
-                }
-            } // end omp ordered
-        } // end omp for
-    } // end omp parallel
+                } /* end chunk output loop */
+            } /* end omp single */
+            /* implicit barrier — output done, safe to reuse chunk buffer */
+        } /* end chunk loop */
+    } /* end omp parallel */
 
     fprintf(stderr, "\n");
 
     // Close KNN output files
     if (knn_idx_fp) fclose(knn_idx_fp);
     if (knn_dst_fp) fclose(knn_dst_fp);
-    free(all_knn_idx);
-    free(all_knn_dst);
+    free(knn_idx_buf);
+    free(knn_dst_buf);
 
     if (topk > 0) {
         fprintf(stderr, "[predTED] KNN complete: m=%d K=%d tau=%d\n",
                 num_structures, topk, tau);
-        // Write verification header to stdout
         printf("%d %d\n", num_structures, topk);
     }
 
@@ -612,12 +626,10 @@ int main(int argc, char* argv[]) {
     free(all_batch);
     free(all_out);
     free(all_pairs);
+    free(chunk_int);
+    free(chunk_flt);
+    free(out_f32);
 
-    free(all_row_int);
-    free(all_row_flt);
-    free(all_row_f32);
-
-    // Clean up
     for (int i = 0; i < num_structures; i++) free(structures[i]);
     free(structures);
     free(features);
