@@ -3,6 +3,15 @@
 
 #define NUM_FEATURES_BASE 36
 
+typedef struct {
+    const char *structure;
+    int         len;
+    short      *pair_table;
+} StructureContext;
+
+StructureContext create_context(const char *structure);
+void             destroy_context(StructureContext *ctx);
+
 /* Compute the 36 structural features for a dot-bracket string.
  * `features` must point to an array of at least NUM_FEATURES_BASE doubles. */
 void compute_selected_features(const char* structure, double* features);

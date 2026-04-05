@@ -41,6 +41,19 @@ short* create_pair_table(const char* structure) {
     return pt;
 }
 
+StructureContext create_context(const char *structure) {
+    StructureContext ctx;
+    ctx.structure = structure;
+    ctx.len = (int)strlen(structure);
+    ctx.pair_table = create_pair_table(structure);
+    return ctx;
+}
+
+void destroy_context(StructureContext *ctx) {
+    free(ctx->pair_table);
+    ctx->pair_table = NULL;
+}
+
 int* compute_depth_profile(const char* structure) {
     int len = strlen(structure);
     int* profile = (int*)malloc(len * sizeof(int));
@@ -56,10 +69,10 @@ int* compute_depth_profile(const char* structure) {
     return profile;
 }
 
-void get_depth_features(const char* structure, double* mean_depth, double* var_depth, int* peaks, double* mean_depth_paired, double* var_depth_paired, double* mean_depth_unpaired, double* var_depth_unpaired) {
-    int len = strlen(structure);
-    short* pt = create_pair_table(structure);
-    int* profile = compute_depth_profile(structure);
+static void get_depth_features_ctx(const StructureContext *ctx, double* mean_depth, double* var_depth, int* peaks, double* mean_depth_paired, double* var_depth_paired, double* mean_depth_unpaired, double* var_depth_unpaired) {
+    int len = ctx->len;
+    short* pt = ctx->pair_table;
+    int* profile = compute_depth_profile(ctx->structure);
     double sum = 0, sum_sq = 0;
     int count = 0;
     double sum_paired = 0, sum_sq_paired = 0;
@@ -75,7 +88,7 @@ void get_depth_features(const char* structure, double* mean_depth, double* var_d
             sum_paired += profile[i];
             sum_sq_paired += profile[i] * profile[i];
             count_paired++;
-        } else if (structure[i] == '.') {
+        } else if (ctx->structure[i] == '.') {
             sum_unpaired += profile[i];
             sum_sq_unpaired += profile[i] * profile[i];
             count_unpaired++;
@@ -92,12 +105,17 @@ void get_depth_features(const char* structure, double* mean_depth, double* var_d
     *mean_depth_unpaired = count_unpaired > 0 ? sum_unpaired / count_unpaired : 0;
     *var_depth_unpaired = count_unpaired > 1 ? (sum_sq_unpaired / count_unpaired - (*mean_depth_unpaired) * (*mean_depth_unpaired)) : 0;
     free(profile);
-    free(pt);
 }
 
-int* find_stems(const char* structure) {
-    short* pt = create_pair_table(structure);
-    int len = strlen(structure);
+void get_depth_features(const char* structure, double* mean_depth, double* var_depth, int* peaks, double* mean_depth_paired, double* var_depth_paired, double* mean_depth_unpaired, double* var_depth_unpaired) {
+    StructureContext ctx = create_context(structure);
+    get_depth_features_ctx(&ctx, mean_depth, var_depth, peaks, mean_depth_paired, var_depth_paired, mean_depth_unpaired, var_depth_unpaired);
+    destroy_context(&ctx);
+}
+
+static int* find_stems_ctx(const StructureContext *ctx) {
+    short* pt = ctx->pair_table;
+    int len = ctx->len;
     int* stems = (int*)malloc((len + 1) * sizeof(int));
     int stem_count = 0;
     int* visited = (int*)calloc(len + 1, sizeof(int));
@@ -118,13 +136,19 @@ int* find_stems(const char* structure) {
         }
     }
     stems[stem_count] = -1;
-    free(pt);
     free(visited);
     return stems;
 }
 
-void get_stem_features(const char* structure, int* num_stems, double* max_stem_length, double* avg_stem_length, double* var_stem_length) {
-    int* stems = find_stems(structure);
+int* find_stems(const char* structure) {
+    StructureContext ctx = create_context(structure);
+    int* stems = find_stems_ctx(&ctx);
+    destroy_context(&ctx);
+    return stems;
+}
+
+static void get_stem_features_ctx(const StructureContext *ctx, int* num_stems, double* max_stem_length, double* avg_stem_length, double* var_stem_length) {
+    int* stems = find_stems_ctx(ctx);
     int count = 0;
     double sum = 0, sum_sq = 0;
     int max_len = 0;
@@ -139,6 +163,12 @@ void get_stem_features(const char* structure, int* num_stems, double* max_stem_l
     *avg_stem_length = count > 0 ? sum / count : 0;
     *var_stem_length = count > 1 ? (sum_sq / count - (*avg_stem_length) * (*avg_stem_length)) : 0;
     free(stems);
+}
+
+void get_stem_features(const char* structure, int* num_stems, double* max_stem_length, double* avg_stem_length, double* var_stem_length) {
+    StructureContext ctx = create_context(structure);
+    get_stem_features_ctx(&ctx, num_stems, max_stem_length, avg_stem_length, var_stem_length);
+    destroy_context(&ctx);
 }
 
 void get_loop_features(const char* structure, double* mean_loop, double* var_loop) {
@@ -217,10 +247,10 @@ double* get_ngram_features(const char* structure, int n) {
     return frequencies;
 }
 
-int count_hairpin_loops(const char* structure) {
-    short* pt = create_pair_table(structure);
+static int count_hairpin_loops_ctx(const StructureContext *ctx) {
+    short* pt = ctx->pair_table;
     int hairpin_loops = 0;
-    int len = strlen(structure);
+    int len = ctx->len;
     for (int i = 1; i <= len; i++) {
         if (pt[i] > i) {
             int j = pt[i];
@@ -236,26 +266,38 @@ int count_hairpin_loops(const char* structure) {
             }
         }
     }
-    free(pt);
     return hairpin_loops;
 }
 
-int count_stacked_pairs(const char* structure) {
-    short* pt = create_pair_table(structure);
-    int len = strlen(structure);
+int count_hairpin_loops(const char* structure) {
+    StructureContext ctx = create_context(structure);
+    int result = count_hairpin_loops_ctx(&ctx);
+    destroy_context(&ctx);
+    return result;
+}
+
+static int count_stacked_pairs_ctx(const StructureContext *ctx) {
+    short* pt = ctx->pair_table;
+    int len = ctx->len;
     int stacked = 0;
     for (int i = 1; i < len; i++) {
         if (pt[i] > i && pt[i + 1] == pt[i] - 1) {
             stacked++;
         }
     }
-    free(pt);
     return stacked;
 }
 
-void get_base_pair_distances(const char* structure, double* avg_bp_dist, int* max_bp_dist) {
-    short* pt = create_pair_table(structure);
-    int len = strlen(structure);
+int count_stacked_pairs(const char* structure) {
+    StructureContext ctx = create_context(structure);
+    int result = count_stacked_pairs_ctx(&ctx);
+    destroy_context(&ctx);
+    return result;
+}
+
+static void get_base_pair_distances_ctx(const StructureContext *ctx, double* avg_bp_dist, int* max_bp_dist) {
+    short* pt = ctx->pair_table;
+    int len = ctx->len;
     double sum = 0;
     int count = 0;
     int max_dist = 0;
@@ -269,7 +311,12 @@ void get_base_pair_distances(const char* structure, double* avg_bp_dist, int* ma
     }
     *avg_bp_dist = count > 0 ? sum / count : 0;
     *max_bp_dist = max_dist;
-    free(pt);
+}
+
+void get_base_pair_distances(const char* structure, double* avg_bp_dist, int* max_bp_dist) {
+    StructureContext ctx = create_context(structure);
+    get_base_pair_distances_ctx(&ctx, avg_bp_dist, max_bp_dist);
+    destroy_context(&ctx);
 }
 
 int num_paired_bases(const char* structure) {
@@ -280,9 +327,9 @@ int num_unpaired_bases(const char* structure) {
     return count_char(structure, '.');
 }
 
-int* get_hairpin_loop_sizes(const char* structure) {
-    short* pt = create_pair_table(structure);
-    int len = strlen(structure);
+static int* get_hairpin_loop_sizes_ctx(const StructureContext *ctx) {
+    short* pt = ctx->pair_table;
+    int len = ctx->len;
     int* sizes = (int*)malloc((len + 1) * sizeof(int));
     int count = 0;
     for (int i = 1; i <= len; i++) {
@@ -301,7 +348,13 @@ int* get_hairpin_loop_sizes(const char* structure) {
         }
     }
     sizes[count] = -1;
-    free(pt);
+    return sizes;
+}
+
+int* get_hairpin_loop_sizes(const char* structure) {
+    StructureContext ctx = create_context(structure);
+    int* sizes = get_hairpin_loop_sizes_ctx(&ctx);
+    destroy_context(&ctx);
     return sizes;
 }
 
@@ -411,11 +464,11 @@ int tree_depth(const char* structure) {
     return max_depth;
 }
 
-int* get_internal_loop_sizes(const char* structure) {
-    int len = strlen(structure);
+static int* get_internal_loop_sizes_ctx(const StructureContext *ctx) {
+    int len = ctx->len;
     int* sizes = (int*)malloc((len + 1) * sizeof(int));
     int count = 0;
-    short* pt = create_pair_table(structure);
+    short* pt = ctx->pair_table;
     for (int i = 1; i <= len; i++) {
         if (pt[i] > i) {
             int j = pt[i];
@@ -434,7 +487,13 @@ int* get_internal_loop_sizes(const char* structure) {
         }
     }
     sizes[count] = -1;
-    free(pt);
+    return sizes;
+}
+
+int* get_internal_loop_sizes(const char* structure) {
+    StructureContext ctx = create_context(structure);
+    int* sizes = get_internal_loop_sizes_ctx(&ctx);
+    destroy_context(&ctx);
     return sizes;
 }
 
@@ -486,14 +545,16 @@ int compute_max(int* sizes) {
 }
 
 void compute_selected_features(const char* structure, double* features) {
+    StructureContext ctx = create_context(structure);
+
     features[0] = count_internal_loops(structure);
     double mean_depth, var_depth, mean_depth_paired, var_depth_paired, mean_depth_unpaired, var_depth_unpaired;
     int peaks;
-    get_depth_features(structure, &mean_depth, &var_depth, &peaks, &mean_depth_paired, &var_depth_paired, &mean_depth_unpaired, &var_depth_unpaired);
+    get_depth_features_ctx(&ctx, &mean_depth, &var_depth, &peaks, &mean_depth_paired, &var_depth_paired, &mean_depth_unpaired, &var_depth_unpaired);
     features[1] = var_depth_paired;
     features[2] = count_multiloops(structure);
     features[3] = max_loop_size(structure);
-    features[4] = strlen(structure);
+    features[4] = ctx.len;
     double mean_loop, var_loop;
     get_loop_features(structure, &mean_loop, &var_loop);
     features[5] = mean_loop;
@@ -504,7 +565,7 @@ void compute_selected_features(const char* structure, double* features) {
     features[10] = graph_centrality(structure);
     int num_stems;
     double max_stem_length, avg_stem_length, var_stem_length;
-    get_stem_features(structure, &num_stems, &max_stem_length, &avg_stem_length, &var_stem_length);
+    get_stem_features_ctx(&ctx, &num_stems, &max_stem_length, &avg_stem_length, &var_stem_length);
     features[11] = var_stem_length;
     features[12] = max_stem_length;
     features[13] = avg_stem_length;
@@ -513,19 +574,19 @@ void compute_selected_features(const char* structure, double* features) {
     features[16] = var_depth_unpaired;
     features[17] = var_depth;
     features[18] = mean_depth;
-    features[19] = count_hairpin_loops(structure);
-    features[20] = count_stacked_pairs(structure);
+    features[19] = count_hairpin_loops_ctx(&ctx);
+    features[20] = count_stacked_pairs_ctx(&ctx);
     double avg_bp_dist;
     int max_bp_dist;
-    get_base_pair_distances(structure, &avg_bp_dist, &max_bp_dist);
+    get_base_pair_distances_ctx(&ctx, &avg_bp_dist, &max_bp_dist);
     features[21] = avg_bp_dist;
     features[22] = num_paired_bases(structure);
     features[23] = num_unpaired_bases(structure);
-    int* hairpin_sizes = get_hairpin_loop_sizes(structure);
+    int* hairpin_sizes = get_hairpin_loop_sizes_ctx(&ctx);
     features[24] = compute_mean(hairpin_sizes);
     features[25] = compute_max(hairpin_sizes);
     free(hairpin_sizes);
-    int* internal_loop_sizes = get_internal_loop_sizes(structure);
+    int* internal_loop_sizes = get_internal_loop_sizes_ctx(&ctx);
     features[26] = compute_mean(internal_loop_sizes);
     features[27] = compute_max(internal_loop_sizes);
     free(internal_loop_sizes);
@@ -539,4 +600,6 @@ void compute_selected_features(const char* structure, double* features) {
     features[34] = bigram_features[7];
     features[35] = bigram_features[8];
     free(bigram_features);
+
+    destroy_context(&ctx);
 }
