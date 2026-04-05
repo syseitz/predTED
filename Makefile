@@ -10,7 +10,7 @@ UNAME_S := $(shell uname -s)
 
 CC       ?= gcc
 CXX      ?= c++
-CFLAGS   ?= -O2 -Wall -Wno-deprecated-declarations
+CFLAGS   ?= -O2 -Wall -Wno-deprecated-declarations -march=native
 LDFLAGS  ?=
 
 CLI_SRC   = c_src/predTED.c c_src/predted_features.c

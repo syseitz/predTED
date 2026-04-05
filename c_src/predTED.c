@@ -14,6 +14,67 @@
 
 #include "predted_features.h"
 
+/* SIMD: build pairwise features from two double[36] arrays into float32 output */
+
+#if defined(__ARM_NEON)
+  #include <arm_neon.h>
+  #define PREDTED_SIMD_NEON 1
+#elif defined(__SSE__)
+  #include <xmmintrin.h>
+  #define PREDTED_SIMD_SSE 1
+#endif
+
+static inline void build_rich_features_simd(
+    const double * __restrict__ fi,
+    const double * __restrict__ fj,
+    float * __restrict__ out,
+    int rich)
+{
+#if defined(PREDTED_SIMD_NEON)
+    for (int k = 0; k < NUM_FEATURES_BASE; k += 4) {
+        float32x2_t a_lo = vcvt_f32_f64(vld1q_f64(&fi[k]));
+        float32x2_t a_hi = vcvt_f32_f64(vld1q_f64(&fi[k + 2]));
+        float32x4_t a = vcombine_f32(a_lo, a_hi);
+
+        float32x2_t b_lo = vcvt_f32_f64(vld1q_f64(&fj[k]));
+        float32x2_t b_hi = vcvt_f32_f64(vld1q_f64(&fj[k + 2]));
+        float32x4_t b = vcombine_f32(b_lo, b_hi);
+
+        vst1q_f32(&out[k], vabsq_f32(vsubq_f32(a, b)));
+        if (rich) {
+            vst1q_f32(&out[NUM_FEATURES_BASE + k],     vaddq_f32(a, b));
+            vst1q_f32(&out[NUM_FEATURES_BASE * 2 + k], vminq_f32(a, b));
+            vst1q_f32(&out[NUM_FEATURES_BASE * 3 + k], vmaxq_f32(a, b));
+        }
+    }
+
+#elif defined(PREDTED_SIMD_SSE)
+    const __m128 sign_mask = _mm_set1_ps(-0.0f);
+    for (int k = 0; k < NUM_FEATURES_BASE; k += 4) {
+        __m128 a = _mm_set_ps((float)fi[k+3], (float)fi[k+2], (float)fi[k+1], (float)fi[k]);
+        __m128 b = _mm_set_ps((float)fj[k+3], (float)fj[k+2], (float)fj[k+1], (float)fj[k]);
+        __m128 diff = _mm_andnot_ps(sign_mask, _mm_sub_ps(a, b));
+        _mm_storeu_ps(&out[k], diff);
+        if (rich) {
+            _mm_storeu_ps(&out[NUM_FEATURES_BASE + k],     _mm_add_ps(a, b));
+            _mm_storeu_ps(&out[NUM_FEATURES_BASE * 2 + k], _mm_min_ps(a, b));
+            _mm_storeu_ps(&out[NUM_FEATURES_BASE * 3 + k], _mm_max_ps(a, b));
+        }
+    }
+
+#else
+    for (int k = 0; k < NUM_FEATURES_BASE; ++k)
+        out[k] = (float)fabs(fi[k] - fj[k]);
+    if (rich) {
+        for (int k = 0; k < NUM_FEATURES_BASE; ++k) {
+            out[NUM_FEATURES_BASE     + k] = (float)(fi[k] + fj[k]);
+            out[NUM_FEATURES_BASE * 2 + k] = (float)(fi[k] < fj[k] ? fi[k] : fj[k]);
+            out[NUM_FEATURES_BASE * 3 + k] = (float)(fi[k] > fj[k] ? fi[k] : fj[k]);
+        }
+    }
+#endif
+}
+
 #define MISS_UINT16 65535
 
 #define NUM_FEATURES_RICH (NUM_FEATURES_BASE * 4)  /* diff + sum + min + max */
@@ -366,16 +427,7 @@ int main(int argc, char* argv[]) {
                 const double *fi = &features[i * NUM_FEATURES_BASE];
                 const double *fj = &features[j * NUM_FEATURES_BASE];
 
-                for (int k = 0; k < NUM_FEATURES_BASE; ++k) {
-                    my_batch[offset + k] = (float)fabs(fi[k] - fj[k]);
-                }
-                if (rich_features) {
-                    for (int k = 0; k < NUM_FEATURES_BASE; ++k) {
-                        my_batch[offset + NUM_FEATURES_BASE     + k] = (float)(fi[k] + fj[k]);
-                        my_batch[offset + NUM_FEATURES_BASE * 2 + k] = (float)(fi[k] < fj[k] ? fi[k] : fj[k]);
-                        my_batch[offset + NUM_FEATURES_BASE * 3 + k] = (float)(fi[k] > fj[k] ? fi[k] : fj[k]);
-                    }
-                }
+                build_rich_features_simd(fi, fj, &my_batch[offset], rich_features);
                 my_pairs[batch_count] = j;
                 batch_count++;
 
